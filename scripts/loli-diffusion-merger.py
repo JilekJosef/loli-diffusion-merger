@@ -2,8 +2,6 @@ import gc
 import os
 import os.path
 import re
-import json
-import shutil
 from tqdm import tqdm
 import torch
 from statistics import mean
@@ -13,20 +11,15 @@ from importlib import reload
 import gradio as gr
 from modules import (script_callbacks, sd_models, sd_vae, shared)
 from modules.scripts import basedir
-from modules.sd_models import checkpoints_loaded, load_model, unload_model_weights
 from modules.ui import create_refresh_button
 import scripts.mergers.mergers
-import scripts.mergers.xyplot
 import scripts.mergers.components as components
 from importlib import reload
 
 reload(scripts.mergers.mergers)
-reload(scripts.mergers.xyplot)
-#reload(scripts.mergers.pluslora)
 import csv
 import scripts.mergers.pluslora as pluslora
-from scripts.mergers.mergers import (EXCLUDE_CHOICES, freezemtime, rwmergelog, blockfromkey, clearcache,
-                                     getcachelist)
+from scripts.mergers.mergers import (EXCLUDE_CHOICES, rwmergelog, blockfromkey)
 
 from scripts.mergers.model_util import filenamecutter
 
@@ -65,53 +58,23 @@ def fix_network_reset_cached_weight():
         pass
 
 
+weights_presets = ""
+userfilepath = os.path.join(path_root, "scripts", "mbwpresets.txt")
+if os.path.isfile(userfilepath):
+    try:
+        with open(userfilepath) as f:
+            weights_presets = f.read()
+    except OSError as e:
+        print(e)
+        pass
+
 def on_ui_tabs():
     fix_network_reset_cached_weight()
-
-    # def getxyzpresetlist():
-    #    try:
-    #        with open(xyzpath, 'r') as file:
-    #            data = json.load(file)
-    #    except FileNotFoundError:
-    #        data = {}
-    #    return list(data.keys())
-
-    weights_presets = ""
-    userfilepath = os.path.join(path_root, "scripts", "mbwpresets.txt")
-    # xyzpath = os.path.join(path_root,"xyzpresets.json")
-    if os.path.isfile(userfilepath):
-        try:
-            with open(userfilepath) as f:
-                weights_presets = f.read()
-                filepath = userfilepath
-        except OSError as e:
-            print(e)
-            pass
-    else:
-        filepath = os.path.join(path_root, "scripts", "mbwpresets_master.txt")
-        try:
-            with open(filepath) as f:
-                weights_presets = f.read()
-                shutil.copyfile(filepath, userfilepath)
-        except OSError as e:
-            print(e)
-            pass
-
-    if "ALLR" not in weights_presets: weights_presets += ADDRAND
 
     with gr.Blocks() as loli_diffusion_merger_ui:
         with gr.Tab("Merge"):
             with ResizeHandleRow(equal_height=False):
                 with gr.Column(variant="compact"):
-                    gr.HTML(value="<p>Merge models and load it for generation</p>")
-
-                    with gr.Row():
-                        s_reverse = gr.Button(value="Load settings from:", elem_classes=["compact_button"],
-                                              variant='primary')
-                        mergeid = gr.Textbox(label="merged model ID (-1 for last)",
-                                             elem_id="model_converter_custom_name", value="-1")
-                        mclearcache = gr.Button(value="Clear Cache", elem_classes=["compact_button"], variant='primary')
-
                     with gr.Row(variant="compact"):
                         model_a = gr.Dropdown(sd_models.checkpoint_tiles(), elem_id="model_converter_model_name",
                                               label="Model A", interactive=True)
@@ -129,8 +92,8 @@ def on_ui_tabs():
                                               lambda: {"choices": sd_models.checkpoint_tiles()}, "refresh_checkpoint_Z")
 
                     mode = gr.Radio(label="Merge Mode",
-                                    choices=["Weight sum", "Add difference", "Triple sum", "sum Twice"],
-                                    value="Weight sum", info="A*(1-alpha)+B*alpha")
+                                    choices=["Weight sum", "Add difference", "Triple sum", "Sum twice", "AND gate"],
+                                    value="Weight sum", info="A*(1-alpha)+B*alpha Supported calculation methods: normal, cosineA (prioritize structure of A), cosineB (prioritize structure of B), tensor (replace some weights in ratio instead of summing), tensor2 (when the tensor has a large number of dimensions, exchanges are performed based on the second dimension), self (ignores second model and multiply model A with alpha -> will likely result in model corruption if not used carefully)")
                     calcmode = gr.Radio(label="Calculation Mode", choices=CALCMODES, value="normal")
                     with gr.Row(variant="compact"):
                         with gr.Column(scale=1):
@@ -140,17 +103,17 @@ def on_ui_tabs():
                                 base_alpha = gr.Slider(label="alpha", minimum=-1.0, maximum=2, step=0.001, value=0.5)
                                 base_beta = gr.Slider(label="beta", minimum=-1.0, maximum=2, step=0.001, value=0.25,
                                                       interactive=False)
+                            with gr.Row():
+                                base_deviation = gr.Slider(label="deviation", minimum=0, maximum=100, step=0.0000001,
+                                                           value=5)
                         # weights = gr.Textbox(label="weights,base alpha,IN00,IN02,...IN11,M00,OUT00,...,OUT11",lines=2,value="0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5")
 
-                    with gr.Accordion("Options", open=False):
+                    with gr.Accordion("Options", open=True):
                         with gr.Row(variant="compact"):
                             save_sets = gr.CheckboxGroup(
-                                ["save model", "overwrite", "safetensors", "fp16", "save metadata", "prune",
-                                 "Reset CLIP ids", "use old calc method", "debug"], value=["safetensors"],
+                                ["overwrite", "safetensors", "fp16", "save metadata", "prune",
+                                 "Reset CLIP ids"], value=["safetensors"],
                                 show_label=False, label="save settings")
-                        with gr.Row():
-                            components.id_sets = gr.CheckboxGroup(["image", "PNG info"],
-                                                                  label="save merged model ID to")
                             opt_value = gr.Slider(label="option", minimum=-1.0, maximum=2, step=0.001, value=0.3,
                                                   interactive=True)
                         with gr.Row(variant="compact"):
@@ -158,7 +121,6 @@ def on_ui_tabs():
                                 with gr.Row():
                                     custom_name = gr.Textbox(label="Custom Name (Optional)",
                                                              elem_id="model_converter_custom_name")
-
                             with gr.Column():
                                 with gr.Row():
                                     bake_in_vae = gr.Dropdown(choices=["None"] + list(sd_vae.vae_dict), value="None",
@@ -166,11 +128,6 @@ def on_ui_tabs():
                                     create_refresh_button(bake_in_vae, sd_vae.refresh_vae_list,
                                                           lambda: {"choices": ["None"] + list(sd_vae.vae_dict)},
                                                           "modelmerger_refresh_bake_in_vae")
-
-                    with gr.Row():
-                        components.merge = gr.Button(elem_id="model_merger_merge", elem_classes=["compact_button"],
-                                                     value="Merge!", variant='primary')
-                        stopmerge = gr.Button(elem_id="stopmerge", elem_classes=["compact_button"], value="Stop")
 
                     with gr.Accordion("Merging Block Weights", open=False):
                         with gr.Row():
@@ -201,7 +158,7 @@ def on_ui_tabs():
                                                             scale=3)
                                         readbeta = gr.Button(elem_id="copytogen", value="↓ Read beta",
                                                              variant='primary', scale=3)
-                                        sety = gr.Button(elem_id="copytogen", value="↑ Set Y", min_width="80px",
+                                        sety = gr.Button(elem_id="copytogen", value="↑ Set Y", min_width=80,
                                                          scale=1)
 
                             with gr.Group(), gr.Tabs():
@@ -210,41 +167,6 @@ def on_ui_tabs():
                                         dd_preset_weight = gr.Dropdown(label="Select preset",
                                                                        choices=preset_name_list(weights_presets),
                                                                        interactive=True, elem_id="refresh_presets")
-                                        preset_refresh = gr.Button(value='\U0001f504', elem_classes=["tool"])
-
-                                with gr.Tab("Random Preset"):
-                                    with gr.Row():
-                                        dd_preset_weight_r = gr.Dropdown(label="Load Romdom preset",
-                                                                         choices=preset_name_list(weights_presets,
-                                                                                                  True),
-                                                                         interactive=True, elem_id="refresh_presets")
-                                        preset_refresh_r = gr.Button(value='\U0001f504', elem_classes=["tool"])
-                                        luckab = gr.Radio(label="for", choices=["none", "alpha", "beta"], value="none",
-                                                          type="value")
-
-                                with gr.Tab("Helper"):
-                                    with gr.Column():
-                                        resetval = gr.Slider(label="Value", show_label=False,
-                                                             info="Value to set/add/mul", minimum=0, maximum=2,
-                                                             step=0.0001, value=0)
-                                        resetopt = gr.Radio(label="Pre defined", show_label=False,
-                                                            choices=["0", "0.25", "0.5", "0.75", "1"], value="0",
-                                                            type="value")
-                                    with gr.Column():
-                                        resetblockopt = gr.CheckboxGroup(["BASE", "INP*", "MID", "OUT*"],
-                                                                         value=["INP*", "OUT*"], label="Blocks",
-                                                                         show_label=False,
-                                                                         info="Select blocks to change")
-                                    with gr.Column():
-                                        with gr.Row():
-                                            resetweight = gr.Button(elem_classes=["reset"], value="Set")
-                                            addweight = gr.Button(elem_classes=["reset"], value="Add")
-                                            mulweight = gr.Button(elem_classes=["reset"], value="Mul")
-                                        with gr.Row():
-                                            lower = gr.Slider(label="Slider Lower Limit", minimum=-2, maximum=3,
-                                                              step=0.1, value=0)
-                                            upper = gr.Slider(label="Slider Upper Limit", minimum=-2, maximum=3,
-                                                              step=0.1, value=1)
 
                             with gr.Row():
                                 with gr.Column(scale=1, min_width=100):
@@ -288,36 +210,18 @@ def on_ui_tabs():
                                 with gr.Column(scale=1, min_width=100):
                                     gr.Slider(visible=False)
 
-                        with gr.Tab("Weights Presets"):
-                            with gr.Row():
-                                s_reloadtext = gr.Button(value="Reload Presets", variant='primary')
-                                s_reloadtags = gr.Button(value="Reload Tags", variant='primary')
-                                s_savetext = gr.Button(value="Save Presets", variant='primary')
-                                s_openeditor = gr.Button(value="Open TextEditor", variant='primary')
-                            weightstags = gr.Textbox(label="available", lines=2, value=tagdicter(weights_presets),
-                                                     visible=True, interactive=True)
-                            wpresets = gr.TextArea(label="", value=(weights_presets + ADDRAND), visible=True,
-                                                   interactive=True)
-
                     components.dtrue = gr.Checkbox(value=True, visible=False)
                     components.dfalse = gr.Checkbox(value=False, visible=False)
                     dummy_t = gr.Textbox(value="", visible=False)
 
-                    with gr.Accordion("Advanced", open=False):
-                        with gr.Row():
-                            currentcache = gr.Textbox(label="Current Cache")
-                            loadcachelist = gr.Button(elem_id="model_merger_merge", value="Reload Cache List",
-                                                      variant='primary')
-                            unloadmodel = gr.Button(value="unload model", variant='primary')
-
                 with gr.Column(variant="compact"):
-                    components.currentmodel = gr.Textbox(label="Current Model", lines=1, value="")
-                    components.submit_result = gr.Textbox(label="Message")
-                    #mgallery, mgeninfo, mhtmlinfo, mhtmllog = create_output_panel("txt2img",
-                    #                                                              opts.outdir_txt2img_samples)
+                    with gr.Row():
+                        components.merge = gr.Button(elem_id="model_merger_merge", elem_classes=["compact_button"],
+                                                     value="Merge!", variant='primary')
+                    components.currentmodel = gr.Textbox(label="Current Model", lines=1, value="", interactive=False)
+                    components.submit_result = gr.Textbox(label="Message", interactive=False)
 
-        # main ui end 
-
+        # main ui end
         with gr.Tab("LoRA", elem_id="tab_lora"):
             pluslora.on_ui_tabs()
 
@@ -356,26 +260,12 @@ def on_ui_tabs():
         run_analysis.click(fn=calccosinedif, inputs=[an_model_a, an_model_b, an_mode, an_settings, an_include, an_calc],
                            outputs=[analysis_cosdif])
 
-        with gr.Tab("History", elem_id="tab_history"):
-
-            with gr.Row():
-                with gr.Column(scale=2):
-                    with gr.Row():
-                        count = gr.Dropdown(choices=["20", "30", "40", "50", "100"], value="20", label="Load count")
-                        load_history = gr.Button(value="Load history", variant='primary', elem_classes=["reset"])
-                        reload_history = gr.Button(value="Reload history", elem_classes=["reset"])
-                with gr.Column(scale=2):
-                    with gr.Row():
-                        searchwrods = gr.Textbox(label="", lines=1, value="")
-                        search = gr.Button(value="search", elem_classes=["reset"])
-                        searchmode = gr.Radio(label="Search Mode", choices=["or", "and"], value="or", type="value")
-            with gr.Row():
-                history = gr.Dataframe(
-                    headers=["ID", "Time", "Name", "Weights alpha", "Weights beta", "Model A", "Model B", "Model C",
-                             "alpha", "beta", "Mode", "use MBW", "custum name", "save setting", "use ID"],
-                )
-
+        import sys
+        sys.path.insert(0, os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'extensions-builtin', 'Lora')))
         import lora
+        sys.path.remove(os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'extensions-builtin', 'Lora')))
 
         with gr.Tab("Elements", elem_id="tab_deep"):
             with gr.Row():
@@ -409,58 +299,30 @@ def on_ui_tabs():
             outputs=[metadata]
         )
 
-        mclearcache.click(fn=clearcache)
         smd_loadkeys.click(fn=loadkeys, inputs=[smd_model_a, components.dfalse], outputs=[keys])
         smd_loadkeys_l.click(fn=loadkeys, inputs=[smd_lora, components.dtrue], outputs=[keys])
 
         te_smd_loadkeys.click(fn=encodetexts, inputs=[exclude], outputs=[encoded])
         te_smd_searchkeys.click(fn=pickupencode, inputs=[pickupword], outputs=[encoded])
 
-        def unload():
-            if shared.sd_model == None: return "already unloaded"
-            load_model, unload_model_weights()
-            return "model unloaded"
-
-        unloadmodel.click(fn=unload, outputs=[components.submit_result])
-
-        load_history.click(fn=load_historyf, inputs=[history, count], outputs=[history])
-        reload_history.click(fn=load_historyf, inputs=[history, count, components.dtrue], outputs=[history])
-
-        components.msettings = [weights_a, weights_b, model_a, model_b, model_c, base_alpha, base_beta, mode, calcmode,
-                                useblocks, custom_name, save_sets, components.id_sets, wpresets, bake_in_vae, opt_value]
-        #components.imagegal = [mgallery, mgeninfo, mhtmlinfo, mhtmllog]
-
-        s_reverse.click(fn=reversparams,
-                        inputs=mergeid,
-                        outputs=[components.submit_result, *components.msettings[0:8], *components.msettings[9:13],
-                                 calcmode, opt_value]
-                        )
-
-        search.click(fn=searchhistory, inputs=[searchwrods, searchmode], outputs=[history])
-
-        loadcachelist.click(fn=getcachelist, inputs=[], outputs=[currentcache])
-
-        stopmerge.click(fn=freezemtime)
+        components.msettings = [weights_a, weights_b, model_a, model_b, model_c, base_alpha, base_beta, base_deviation,
+                                mode, calcmode,
+                                useblocks, custom_name, save_sets, bake_in_vae, opt_value]
 
         menbers = [base, in00, in01, in02, in03, in04, in05, in06, in07, in08, in09, in10, in11, mi00, ou00, ou01, ou02,
                    ou03, ou04, ou05, ou06, ou07, ou08, ou09, ou10, ou11]
-        menbers_plus = menbers + [resetval]
 
-        lower.change(fn=lambda x: [gr.update(minimum=x) for i in range(len(menbers_plus))], inputs=[lower],
-                     outputs=menbers_plus)
-        upper.change(fn=lambda x: [gr.update(maximum=x) for i in range(len(menbers_plus))], inputs=[upper],
-                     outputs=menbers_plus)
-
-        setalpha.click(fn=slider2text, inputs=[*menbers, wpresets, dd_preset_weight, isxl], outputs=[weights_a])
-        setbeta.click(fn=slider2text, inputs=[*menbers, wpresets, dd_preset_weight, isxl], outputs=[weights_b])
+        setalpha.click(fn=slider2text, inputs=[*menbers, dd_preset_weight, isxl], outputs=[weights_a])
+        setbeta.click(fn=slider2text, inputs=[*menbers, dd_preset_weight, isxl], outputs=[weights_b])
         setx.click(fn=add_to_seq, inputs=[weights_a])
         sety.click(fn=add_to_seq, inputs=[weights_b])
 
         mode_info = {
-            "Weight sum": "A*(1-alpha)+B*alpha",
-            "Add difference": "A+(B-C)*alpha",
-            "Triple sum": "A*(1-alpha-beta)+B*alpha+C*beta",
-            "sum Twice": "(A*(1-alpha)+B*alpha)*(1-beta)+C*beta"
+            "Weight sum": "A*(1-alpha)+B*alpha Supported calculation methods: normal, cosineA (prioritize structure of A), cosineB (prioritize structure of B), tensor (replace some weights in ratio instead of summing), tensor2 (when the tensor has a large number of dimensions, exchanges are performed based on the second dimension), self (ignores second model and multiply model A with alpha -> will likely result in model corruption if not used carefully)",
+            "Add difference": "A+(B-C)*alpha Supported calculation methods: normal, train difference (LoRA like), smooth add (uses median and gausion filter and tries to reduce noise), smooth add MT (multi-threaded smooth add -> runs faster), extract (merge common and uncommon parts between models B and C)",
+            "Triple sum": "A*(1-alpha-beta)+B*alpha+C*beta Supported calculation methods: normal",
+            "Sum twice": "(A*(1-alpha)+B*alpha)*(1-beta)+C*beta Supported calculation methods: normal",
+            "AND gate": "A+(B AND(deviation) C) In case B and C value is similar enough, value of B is used, otherwise value of A is used. Supported calculation methods: normal"
         }
         mode.change(fn=lambda mode, calcmode: [gr.update(info=mode_info[mode]), gr.update(
             interactive=True if mode in ["Triple sum", "sum Twice"] or calcmode in ["tensor", "tensor2"] else False)],
@@ -471,150 +333,10 @@ def on_ui_tabs():
         useblocks.change(fn=lambda mbw: gr.update(visible=False if mbw else True), inputs=[useblocks],
                          outputs=[alpha_group])
 
-        # def save_current_merge(custom_name, save_settings):
-        #    msg = savemodel(None,None,custom_name,save_settings)
-        #    return gr.update(value=msg)
-
-        def addblockweights(val, blockopt, *blocks):
-            if val == "none":
-                val = 0
-
-            value = float(val)
-
-            if "BASE" in blockopt:
-                vals = [blocks[0] + value]
-            else:
-                vals = [blocks[0]]
-
-            if "INP*" in blockopt:
-                inp = [blocks[i + 1] + value for i in range(12)]
-            else:
-                inp = [blocks[i + 1] for i in range(12)]
-            vals = vals + inp
-
-            if "MID" in blockopt:
-                mid = [blocks[13] + value]
-            else:
-                mid = [blocks[13]]
-            vals = vals + mid
-
-            if "OUT*" in blockopt:
-                out = [blocks[i + 14] + value for i in range(12)]
-            else:
-                out = [blocks[i + 14] for i in range(12)]
-            vals = vals + out
-
-            return setblockweights(vals, blockopt)
-
-        def mulblockweights(val, blockopt, *blocks):
-            if val == "none":
-                val = 0
-
-            value = float(val)
-
-            if "BASE" in blockopt:
-                vals = [blocks[0] * value]
-            else:
-                vals = [blocks[0]]
-
-            if "INP*" in blockopt:
-                inp = [blocks[i + 1] * value for i in range(12)]
-            else:
-                inp = [blocks[i + 1] for i in range(12)]
-            vals = vals + inp
-
-            if "MID" in blockopt:
-                mid = [blocks[13] * value]
-            else:
-                mid = [blocks[13]]
-            vals = vals + mid
-
-            if "OUT*" in blockopt:
-                out = [blocks[i + 14] * value for i in range(12)]
-            else:
-                out = [blocks[i + 14] for i in range(12)]
-            vals = vals + out
-
-            return setblockweights(vals, blockopt)
-
-        def resetblockweights(val, blockopt):
-            if val == "none":
-                val = 0
-            vals = [float(val)] * 26
-            return setblockweights(vals, blockopt)
-
-        def setblockweights(vals, blockopt):
-            if "BASE" in blockopt:
-                ret = [gr.update(value=vals[0])]
-            else:
-                ret = [gr.update()]
-
-            if "INP*" in blockopt:
-                inp = [gr.update(value=vals[i + 1]) for i in range(12)]
-            else:
-                inp = [gr.update() for _ in range(12)]
-            ret = ret + inp
-
-            if "MID" in blockopt:
-                mid = [gr.update(value=vals[13])]
-            else:
-                mid = [gr.update()]
-            ret = ret + mid
-
-            if "OUT*" in blockopt:
-                out = [gr.update(value=vals[i + 14]) for i in range(12)]
-            else:
-                out = [gr.update() for _ in range(12)]
-            ret = ret + out
-
-            return ret
-
-        def resetvalopt(opt):
-            if opt == "none":
-                value = 0.0
-            else:
-                value = float(opt)
-
-            return gr.update(value=value)
-
-        # def finetune_update(finetune, detail1, detail2, detail3, contrast, bri, col1, col2, col3):
-        #    arr = [detail1, detail2, detail3, contrast, bri, col1, col2, col3]
-        #    tmp = ",".join(map(lambda x: str(int(x)) if x == 0.0 else str(x), arr))
-        #    if finetune != tmp:
-        #        return gr.update(value=tmp)
-        #    return gr.update()
-        #
-        # def finetune_reader(finetune):
-        #    tmp = [t.strip() for t in finetune.split(",")]
-        #    ret = [gr.update()]*7
-        #    for i, f in enumerate(tmp[0:7]):
-        #        try:
-        #            f = float(f)
-        #            ret[i] = gr.update(value=f)
-        #        except:
-        #            pass
-        #    return ret
-
-        # update finetune
-
-        resetopt.change(fn=resetvalopt, inputs=[resetopt], outputs=[resetval])
-        resetweight.click(fn=resetblockweights, inputs=[resetval, resetblockopt], outputs=menbers)
-        addweight.click(fn=addblockweights, inputs=[resetval, resetblockopt, *menbers], outputs=menbers)
-        mulweight.click(fn=mulblockweights, inputs=[resetval, resetblockopt, *menbers], outputs=menbers)
-
         readalpha.click(fn=text2slider, inputs=[weights_a, isxl], outputs=menbers)
         readbeta.click(fn=text2slider, inputs=[weights_b, isxl], outputs=menbers)
 
-        dd_preset_weight.change(fn=on_change_dd_preset_weight, inputs=[wpresets, dd_preset_weight], outputs=menbers)
-        dd_preset_weight_r.change(fn=on_change_dd_preset_weight_r, inputs=[wpresets, dd_preset_weight_r, luckab],
-                                  outputs=[weights_a, weights_b])
-
-        def refresh_presets(presets, rand, ab=""):
-            choices = preset_name_list(presets, rand)
-            return gr.update(choices=choices)
-
-        preset_refresh.click(fn=refresh_presets, inputs=[wpresets, components.dfalse], outputs=[dd_preset_weight])
-        preset_refresh_r.click(fn=refresh_presets, inputs=[wpresets, components.dtrue], outputs=[weights_a, weights_b])
+        dd_preset_weight.change(fn=on_change_dd_preset_weight, inputs=[dd_preset_weight], outputs=menbers)
 
         def changexl(isxl):
             out = [True] * 26
@@ -626,181 +348,23 @@ def on_ui_tabs():
 
         isxl.change(fn=changexl, inputs=[isxl], outputs=menbers)
 
-        import subprocess
-        def openeditors():
-            subprocess.Popen(['start', filepath], shell=True)
-
-        def reloadpresets():
-            try:
-                with open(filepath) as f:
-                    weights_presets = f.read()
-                    choices = preset_name_list(weights_presets)
-                    return [weights_presets, gr.update(choices=choices)]
-            except OSError as e:
-                pass
-
-        def savepresets(text):
-            with open(filepath, mode='w') as f:
-                f.write(text)
-
-        s_reloadtext.click(fn=reloadpresets, inputs=[], outputs=[wpresets, dd_preset_weight])
-        s_reloadtags.click(fn=tagdicter, inputs=[wpresets], outputs=[weightstags])
-        s_savetext.click(fn=savepresets, inputs=[wpresets], outputs=[])
-        s_openeditor.click(fn=openeditors, inputs=[], outputs=[])
-
     return (loli_diffusion_merger_ui, "Loli Diffusion Merger", "loli-diffusion-merger"),
-
-
-msearch = []
-mlist = []
-
 
 def loadmetadata(model):
     import json
     checkpoint_info = sd_models.get_closet_checkpoint_match(model)
     if ".safetensors" not in checkpoint_info.filename: return "no metadata(not safetensors)"
     sdict = sd_models.read_metadata_from_safetensors(checkpoint_info.filename)
-    if sdict == {}: return "no metadata"
+    if sdict == {}:
+        return "no metadata"
     return json.dumps(sdict, indent=4)
-
-
-def load_historyf(data, count=20, reload=False):
-    filepath = os.path.join(path_root, "mergehistory.csv")
-    global mlist, msearch
-    try:
-        with  open(filepath, 'r') as f:
-            reader = csv.reader(f)
-            next(reader)  # skip header
-            row_count = sum(1 for row in reader)
-            count = int(count)
-
-            nth = None
-            if not reload and data is not None and len(data) > 1:
-                old = data.loc[len(data) - 1, 'ID']
-                if old != '':
-                    nth = int(old) - count - 1
-
-            if nth is None:
-                msearch = []
-                mlist = []
-                nth = row_count - count
-
-            f.seek(0)
-            next(reader)
-            nlist = [raw for n, raw in enumerate(reader, start=1) if n > nth and n <= (nth + count)]
-            nlist.reverse()
-            for m in nlist:
-                msearch.append(" ".join(m))
-            maxlen = len(nlist[-1][0])
-            for i, m in enumerate(nlist):
-                nlist[i][0] = nlist[i][0].zfill(maxlen)
-            mlist += nlist
-            return mlist
-    except:
-        return [["no data", "", ""], ]
-
-
-def searchhistory(words, searchmode):
-    outs = []
-    ando = "and" in searchmode
-    words = words.split(" ") if " " in words else [words]
-    for i, m in enumerate(msearch):
-        hit = ando
-        for w in words:
-            if ando:
-                if w not in m: hit = False
-            else:
-                if w in m: hit = True
-        if hit: outs.append(mlist[i])
-
-    if outs == []: return [["no result", "", ""], ]
-    return outs
-
-
-# msettings=[0 weights_a,1 weights_b,2 model_a,3 model_b,4 model_c,5 base_alpha,6 base_beta,7 mode,8 useblocks,9 custom_name,10 save_sets,11 id_sets,12 wpresets]
-# 13  deep,14 calcmode,15 luckseed 16:opt_value 17 include/exclude 18: exclude_blocks, 19: exclude_elements
-MSETSNUM = 20
-
-
-def reversparams(id):
-    def selectfromhash(hash):
-        for model in sd_models.checkpoint_tiles():
-            if hash in model:
-                return model
-        return ""
-
-    try:
-        idsets = rwmergelog(id=id)
-    except:
-        return [gr.update(value="ERROR: history file could not open"), *[gr.update() for x in range(MSETSNUM)]]
-    if type(idsets) == str:
-        print("ERROR")
-        return [gr.update(value=idsets), *[gr.update() for x in range(MSETSNUM)]]
-    if idsets[0] == "ID": return [gr.update(value="ERROR: no history"), *[gr.update() for x in range(MSETSNUM)]]
-    mgs = idsets[3:]
-    if mgs[0] == "": mgs[
-        0] = "0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5"
-    if mgs[1] == "": mgs[
-        1] = "0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2,0.2"
-
-    def cutter(text):
-        text = text.replace("[", "").replace("]", "").replace("'", "")
-        return [x.strip() for x in text.split(",") if x != ""]
-
-    mgs[2] = selectfromhash(mgs[2]) if len(mgs[2]) > 5 else ""
-    mgs[3] = selectfromhash(mgs[3]) if len(mgs[3]) > 5 else ""
-    mgs[4] = selectfromhash(mgs[4]) if len(mgs[4]) > 5 else ""
-    mgs[7] = mgs[7].split(":")[0]  # get mode name only
-    mgs[8] = mgs[8] == "True"
-    mgs[10] = cutter(mgs[10])
-    mgs[11] = cutter(mgs[11])
-    while len(mgs) < MSETSNUM:
-        mgs.append("")
-    mgs[13] = "normal" if mgs[13] == "" else mgs[13]
-    mgs[14] = -1 if mgs[14] == "" else mgs[14]
-    mgs[16] = 0.3 if mgs[16] == "" else float(mgs[16])
-    mgs[17] = "Off" if mgs[17] == "" else mgs[17]
-    mgs[18] = cutter(mgs[18])
-    mgs[18] = [x for x in mgs[18] if x in EXCLUDE_CHOICES + ["print"]]
-    return [gr.update(value="setting loaded"), *[gr.update(value=x) for x in mgs[0:MSETSNUM]]]
-
 
 def add_to_seq(seq, maker):
     return gr.Textbox.update(value=maker if seq == "" else seq + "\r\n" + maker)
 
 
-def load_cachelist():
-    text = ""
-    for x in checkpoints_loaded.keys():
-        text = text + "\r\n" + x.model_name
-    return text.replace("\r\n", "", 1)
-
-
-#def makerand(num):
-#    text = ""
-#    for x in range(int(num)):
-#        text = text + "-1,"
-#    text = text[:-1]
-#    return text
-
-
-# 0 row_blockids, 1 row_checkpoints, 2 row_inputers,3 ygrid, 4 zgrid, 5 row_blocks, 6 row_calcmode
-#def showxy(x, y, z):
-#    flags = [False] * 7
-#    t = TYPESEG
-#    txy = t[x] + t[y] + t[z]
-#    if "model" in txy: flags[1] = flags[2] = True
-#    if "pinpoint" in txy: flags[0] = flags[2] = True
-#    if "clude" in txy in txy: flags[5] = True
-#    if "calcmode" in txy: flags[6] = True
-#    if not "none" in t[y]: flags[3] = flags[2] = True
-#    if not "none" in t[z]: flags[4] = flags[2] = True
-#    return [gr.update(visible=x) for x in flags]
-
-
 def text2slider(text, isxl=False):
     vals = [t.strip() for t in text.split(",")]
-    vals = [0 if v in "RUX" else v for v in vals]
 
     if isxl:
         j = 0
@@ -816,10 +380,7 @@ def text2slider(text, isxl=False):
     return [gr.update(value=float(v)) for v in vals]
 
 
-def slider2text(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w, x, y, z, presets, preset, isxl):
-    az = find_preset_by_name(presets, preset)
-    if az is not None:
-        if any(element in az for element in RANCHA): return az
+def slider2text(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w, x, y, z, preset, isxl):
     numbers = [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w, x, y, z]
     if isxl:
         newnums = []
@@ -831,58 +392,30 @@ def slider2text(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v
     return gr.update(value=",".join(numbers))
 
 
-def on_change_dd_preset_weight(presets, preset):
-    weights = find_preset_by_name(presets, preset)
+def on_change_dd_preset_weight(preset):
+    weights = find_preset_by_name(preset)
     if weights is not None:
         return text2slider(weights)
 
 
-def on_change_dd_preset_weight_r(presets, preset, ab):
-    weights = find_preset_by_name(presets, preset)
-    if weights is not None:
-        if "none" in ab: return gr.update(), gr.update()
-        if "alpha" in ab: return gr.update(value=weights), gr.update()
-        if "beta" in ab: return gr.update(), gr.update(value=weights)
-    return gr.update(), gr.update()
-
-
-RANCHA = ["R", "U", "X"]
-
-
-def tagdicter(presets, rand=False):
+def tagdicter(presets):
     presets = presets.splitlines()
-    wdict = {}
-    for l in presets:
-        w = ""
-        if ":" in l:
-            key = l.split(":", 1)[0]
-            w = l.split(":", 1)[1]
-        if "\t" in l:
-            key = l.split("\t", 1)[0]
-            w = l.split("\t", 1)[1]
-        if len([w for w in w.split(",")]) == 26:
-            if rand and not any(element in w for element in RANCHA): continue
-            wdict[key.strip()] = w
-    return ",".join(list(wdict.keys()))
+    preset_names = []
+    for line in presets:
+        preset_names.append(line.split("\t")[0].strip())
+
+    return ",".join(preset_names)
 
 
-def preset_name_list(presets, rand=False):
-    return tagdicter(presets, rand).split(",")
+def preset_name_list(presets):
+    return tagdicter(presets).split(",")
 
 
-def find_preset_by_name(presets, preset):
-    presets = presets.splitlines()
-    for l in presets:
-        if ":" in l:
-            key = l.split(":", 1)[0]
-            w = l.split(":", 1)[1]
-        elif "\t" in l:
-            key = l.split("\t", 1)[0]
-            w = l.split("\t", 1)[1]
-        else:
-            continue
-        if key == preset and len([w for w in w.split(",")]) == 26:
-            return w
+def find_preset_by_name(preset):
+    presets = weights_presets.splitlines()
+    for line in presets:
+        if preset in line:
+            return line.split("\t")[1].strip()
 
     return None
 
@@ -900,15 +433,15 @@ ISXLBLOCK = [True, True, True, True, True, True, True, True, True, True, False, 
 
 def modeltype(sd):
     if "conditioner.embedders.1.model.transformer.resblocks.9.mlp.c_proj.weight" in sd.keys():
-        modeltype = "XL"
+        model_type = "XL"
     else:
-        modeltype = "1.X or 2.X"
-    return modeltype
+        model_type = "1.X or 2.X"
+    return model_type
 
 
 def loadkeys(model_a, lora):
     if lora:
-        import lora
+        import Lora.lora as lora
         sd = sd_models.read_state_dict(lora.available_loras[model_a].filename, "cpu")
     else:
         sd = loadmodel(model_a)
@@ -930,13 +463,6 @@ def loadmodel(model):
     return sd
 
 
-ADDRAND = "\n\
-ALL_R	R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R\n\
-ALL_U	U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U,U\n\
-ALL_X	X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X,X\n\
-"
-
-
 def calccosinedif(model_a, model_b, mode, settings, include, calc):
     inc = " ".join(include)
     settings = " ".join(settings)
@@ -954,53 +480,70 @@ def calccosinedif(model_a, model_b, mode, settings, include, calc):
 
     if "ASim" in mode:
         result = asimilarity(a, b, isxl)
-        if len(settings) > 1: savecalc(result, name, settings, True, "Asim")
+        if len(settings) > 1:
+            savecalc(result, name, settings, True, "Asim")
         del a, b
         gc.collect()
         return result
     else:
         for key in tqdm(a.keys(), desc="Calculating cosine similarity"):
             block = None
-            if blockfromkey(key, isxl) == "Not Merge": continue
-            if "model_ema" in key: continue
-            if "model" not in key: continue
+            if blockfromkey(key, isxl) == "Not Merge":
+                continue
+            if "model_ema" in key:
+                continue
+            if "model" not in key:
+                continue
             if "first_stage_model" in key and not ("VAE" in inc):
                 continue
             elif "first_stage_model" in key and "VAE" in inc:
                 block = "VAE"
-            if "diffusion_model" in key and not ("U-Net" in inc): continue
-            if "encoder" in key and not ("encoder" in inc): continue
+            if "diffusion_model" in key and not ("U-Net" in inc):
+                continue
+            if "encoder" in key and not ("encoder" in inc):
+                continue
             if key in b and a[key].size() == b[key].size():
                 a_flat = a[key].view(-1).to(torch.float32)
                 b_flat = b[key].view(-1).to(torch.float32)
                 simab = torch.nn.functional.cosine_similarity(a_flat.unsqueeze(0), b_flat.unsqueeze(0))
-                if block is None: block, blocks26 = blockfromkey(key, isxl)
-                if block == "Not Merge": continue
+                if block is None:
+                    block, blocks26 = blockfromkey(key, isxl)
+                if block == "Not Merge":
+                    continue
                 cosine_similarities.append([block, key, round(simab.item() * 100, 3)])
                 blocksim[blocks26].append(round(simab.item() * 100, 3))
-                if "attn2.to_out.0.weight" in key: attn2[block] = round(simab.item() * 100, 3)
+                if "attn2.to_out.0.weight" in key:
+                    attn2[block] = round(simab.item() * 100, 3)
 
         for bl in blockids:
             val = None
-            if bl == "Not Merge": continue
-            if bl not in blocksim.keys(): continue
-            if blocksim[bl] == []: continue
+            if bl == "Not Merge":
+                continue
+            if bl not in blocksim.keys():
+                continue
+            if blocksim[bl] == []:
+                continue
             if "Mean" in calc:
                 val = mean(blocksim[bl])
             elif "Min" in calc:
                 val = min(blocksim[bl])
             else:
-                if bl in attn2.keys(): val = attn2[bl]
-            if val: blockvals.append([bl, "", round(val, 3)])
-            if mode != "Element": cosine_similarities.insert(0, [bl, "", round(mean(blocksim[bl]), 3)])
+                if bl in attn2.keys():
+                    val = attn2[bl]
+            if val:
+                blockvals.append([bl, "", round(val, 3)])
+            if mode != "Element":
+                cosine_similarities.insert(0, [bl, "", round(mean(blocksim[bl]), 3)])
 
         if mode == "Block":
-            if len(settings) > 1: savecalc(blockvals, name, settings, True, "Blocks")
+            if len(settings) > 1:
+                savecalc(blockvals, name, settings, True, "Blocks")
             del a, b
             gc.collect()
             return blockvals
         else:
-            if len(settings) > 1: savecalc(cosine_similarities, name, settings, False, "Elements", )
+            if len(settings) > 1:
+                savecalc(cosine_similarities, name, settings, False, "Elements", )
             del a, b
             gc.collect()
             return cosine_similarities
@@ -1015,14 +558,15 @@ def savecalc(data, name, settings, blocks, add):
     for row in data:
         row = [str(r) for r in row]
         txt = txt + ",".join(row) + "\n"
-        if blocks: txt = txt.replace(",,", ",")
+        if blocks:
+            txt = txt.replace(",,", ",")
 
     if "txt" in settings:
-        with  open(txtpath, 'w+') as f:
+        with open(txtpath, 'w+') as f:
             f.writelines(txt)
             print("file saved to ", txtpath)
     if "csv" in settings:
-        with  open(csvpath, 'w+') as f:
+        with open(csvpath, 'w+') as f:
             f.writelines(txt)
             print("file saved to ", csvpath)
 
@@ -1084,27 +628,6 @@ def asimilarity(model_a, model_b, mtype):
 CONFIGS = ["prompt", "neg_prompt", "Steps", "Sampling method", "CFG scale", "Seed", "Width", "Height", "Batch size",
            "Upscaler", "Hires steps", "Denoising strength", "Upscale by"]
 RESETVALS = ["", "", 0, " ", 0, 0, 0, 0, 1, "Latent", 0, 0.7, 2]
-
-
-def configdealer(prompt, neg_prompt, steps, sampler, cfg, seed, width, height, batch_size,
-                 hrupscaler, hr2ndsteps, denois_str, hr_scale, reset):
-    data = [prompt, neg_prompt, steps, sampler, cfg, seed, width, height, batch_size,
-            hrupscaler, hr2ndsteps, denois_str, hr_scale]
-
-    current_directory = os.getcwd()
-    jsonpath = os.path.join(current_directory, "ui-config.json")
-    print(jsonpath)
-
-    with open(jsonpath, 'r') as file:
-        json_data = json.load(file)
-
-    for name, men, default in zip(CONFIGS, data, RESETVALS):
-        key = f"loli-diffusion-merger/{name}/value"
-        json_data[key] = default if reset else men
-
-    with open(jsonpath, 'w') as file:
-        json.dump(json_data, file, indent=4)
-
 
 sorted_output = []
 

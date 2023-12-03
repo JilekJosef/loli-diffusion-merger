@@ -9,7 +9,8 @@ import time
 import torch
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
-from scripts.kohyas import sai_model_spec,model_util,sdxl_model_util,lora
+from scripts.kohyas.library import sai_model_spec, model_util, sdxl_model_util
+from scripts.kohyas import lora
 
 
 CLAMP_QUANTILE = 0.99
@@ -87,7 +88,7 @@ def svd(args):
         lora_name = lora_o.lora_name
         module_o = lora_o.org_module
         module_t = lora_t.org_module
-        diff = args.alpha * module_t.weight - args.beta * module_o.weight
+        diff = module_t.weight - module_o.weight
 
         # Text Encoder might be same
         if not text_encoder_different and torch.max(torch.abs(diff)) > MIN_DIFF:
@@ -106,7 +107,7 @@ def svd(args):
         lora_name = lora_o.lora_name
         module_o = lora_o.org_module
         module_t = lora_t.org_module
-        diff = args.alpha * module_t.weight - args.beta * module_o.weight
+        diff = module_t.weight - module_o.weight
         diff = diff.float()
 
         if args.device:
@@ -204,6 +205,63 @@ def svd(args):
         metadata.update(sai_metadata)
 
     lora_network_save.save_weights(args.save_to, save_dtype, metadata)
-    return f"LoRA weights are saved to: {args.save_to}"
+    print(f"LoRA weights are saved to: {args.save_to}")
 
 
+def setup_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--v2", action="store_true", help="load Stable Diffusion v2.x model / Stable Diffusion 2.xのモデルを読み込む")
+    parser.add_argument(
+        "--v_parameterization",
+        type=bool,
+        default=None,
+        help="make LoRA metadata for v-parameterization (default is same to v2) / 作成するLoRAのメタデータにv-parameterization用と設定する（省略時はv2と同じ）",
+    )
+    parser.add_argument(
+        "--sdxl", action="store_true", help="load Stable Diffusion SDXL base model / Stable Diffusion SDXL baseのモデルを読み込む"
+    )
+    parser.add_argument(
+        "--save_precision",
+        type=str,
+        default=None,
+        choices=[None, "float", "fp16", "bf16"],
+        help="precision in saving, same to merging if omitted / 保存時に精度を変更して保存する、省略時はfloat",
+    )
+    parser.add_argument(
+        "--model_org",
+        type=str,
+        default=None,
+        help="Stable Diffusion original model: ckpt or safetensors file / 元モデル、ckptまたはsafetensors",
+    )
+    parser.add_argument(
+        "--model_tuned",
+        type=str,
+        default=None,
+        help="Stable Diffusion tuned model, LoRA is difference of `original to tuned`: ckpt or safetensors file / 派生モデル（生成されるLoRAは元→派生の差分になります）、ckptまたはsafetensors",
+    )
+    parser.add_argument(
+        "--save_to", type=str, default=None, help="destination file name: ckpt or safetensors file / 保存先のファイル名、ckptまたはsafetensors"
+    )
+    parser.add_argument("--dim", type=int, default=4, help="dimension (rank) of LoRA (default 4) / LoRAの次元数（rank）（デフォルト4）")
+    parser.add_argument(
+        "--conv_dim",
+        type=int,
+        default=None,
+        help="dimension (rank) of LoRA for Conv2d-3x3 (default None, disabled) / LoRAのConv2d-3x3の次元数（rank）（デフォルトNone、適用なし）",
+    )
+    parser.add_argument("--device", type=str, default=None, help="device to use, cuda for GPU / 計算を行うデバイス、cuda でGPUを使う")
+    parser.add_argument(
+        "--no_metadata",
+        action="store_true",
+        help="do not save sai modelspec metadata (minimum ss_metadata for LoRA is saved) / "
+        + "sai modelspecのメタデータを保存しない（LoRAの最低限のss_metadataは保存される）",
+    )
+
+    return parser
+
+
+if __name__ == "__main__":
+    parser = setup_parser()
+
+    args = parser.parse_args()
+    svd(args)
