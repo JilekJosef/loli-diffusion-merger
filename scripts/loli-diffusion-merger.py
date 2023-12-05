@@ -23,6 +23,8 @@ from scripts.mergers.mergers import (EXCLUDE_CHOICES, rwmergelog, blockfromkey)
 
 from scripts.mergers.model_util import filenamecutter
 
+from scripts.mergers.mergers import smergegen
+
 path_root = basedir()
 
 CALCMODES = ["normal", "cosineA", "cosineB", "trainDifference", "smoothAdd", "smoothAdd MT", "extract", "tensor",
@@ -308,6 +310,12 @@ def on_ui_tabs():
         components.msettings = [weights_a, weights_b, model_a, model_b, model_c, base_alpha, base_beta, base_deviation,
                                 mode, calcmode,
                                 useblocks, custom_name, save_sets, bake_in_vae, opt_value]
+
+        components.merge.click(
+            fn=smergegen,
+            inputs=[*components.msettings],
+            outputs=[components.submit_result, components.currentmodel]
+        )
 
         menbers = [base, in00, in01, in02, in03, in04, in05, in06, in07, in08, in09, in10, in11, mi00, ou00, ou01, ou02,
                    ou03, ou04, ou05, ou06, ou07, ou08, ou09, ou10, ou11]
