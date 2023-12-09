@@ -311,7 +311,7 @@ def cpmerge(loranames, filename, model, precision):
         filename = filename + "-" + lname[0]
         if ".safetensors" not in filename:
             filename += ".safetensors"
-        filename = os.path.join(shared.cmd_opts.lora_dir, filename)
+        filename = os.path.join(shared.cmd_opts.ckpt_dir, filename)
 
         text_args = "\"" + fullpathfromname(model) + "\" \"" + lora.available_loras.get(lname[0], None).filename + "\" \"" + filename + "\" "
         if is_sd2:
