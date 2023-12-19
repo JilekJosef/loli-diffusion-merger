@@ -1,6 +1,8 @@
 import os
 import shlex
 import traceback
+from pathlib import Path
+
 import gradio as gr
 
 import scripts.kohaku.extract_locon as extract_locon
@@ -58,6 +60,7 @@ def on_ui_tabs():
                 with gr.Accordion("Set dimensions", open=False):
                     sml_dim = gr.Slider(label="dim", minimum=1, maximum=1280, step=1, value=32)
                     sml_conv_dim = gr.Slider(label="conv dim", minimum=1, maximum=512, step=1, value=16)
+                    sml_quantile = gr.Slider(label="Lycoris quantile", minimum=0, maximum=1, step=0.0001, value=0.99)
                     sml_dim_full_auto = gr.Checkbox(label="Use LyCoris for full auto dimensions (Extract LoRA only)")
 
             with gr.Column(equal_height=False):
@@ -96,7 +99,7 @@ def on_ui_tabs():
 
         sml_makelora.click(
             fn=makelora,
-            inputs=[sml_model_a, sml_model_b, sml_dim, sml_conv_dim, sml_dim_full_auto, sml_filename,
+            inputs=[sml_model_a, sml_model_b, sml_dim, sml_conv_dim, sml_dim_full_auto, sml_quantile, sml_filename,
                     precision],
             outputs=[sml_submit_result]
         )
@@ -186,7 +189,7 @@ def do_resize(loranames, filename, dim, conv_dim, precision):
 
 
 # make LoRA from checkpoint
-def makelora(model_a, model_b, dim, conv_dim, auto_dim, filename, precision):
+def makelora(model_a, model_b, dim, conv_dim, auto_dim, auto_quantile, filename, precision):
     print("make LoRA start")
     if model_a == "" or model_b == "":
         return "ERROR: No model Selected"
@@ -229,7 +232,7 @@ def makelora(model_a, model_b, dim, conv_dim, auto_dim, filename, precision):
             text_args = text_args + "--is_v2 "
         elif is_sdxl:
             text_args = text_args + "--is_sdxl "
-        text_args = text_args + "--safetensors --mode quantile --linear_quantile 0.99 --conv_quantile 0.99"
+        text_args = text_args + "--safetensors --mode quantile --linear_quantile " + str(auto_quantile) + " --conv_quantile " + str(auto_quantile)
         extract_locon.main(text_args)
 
     return "saved: " + filename
@@ -311,7 +314,12 @@ def cpmerge(loranames, filename, model, precision):
         filename = filename + "-" + lname[0]
         if ".safetensors" not in filename:
             filename += ".safetensors"
-        filename = os.path.join(shared.cmd_opts.ckpt_dir, filename)
+        base_path = ""
+        if shared.cmd_opts.ckpt_dir is None:
+            base_path = os.path.join(Path(shared.cmd_opts.lora_dir).parent.absolute(), "Stable-diffusion")
+        else:
+            base_path = shared.cmd_opts.ckpt_dir
+        filename = os.path.join(base_path, filename)
 
         text_args = "\"" + fullpathfromname(model) + "\" \"" + lora.available_loras.get(lname[0], None).filename + "\" \"" + filename + "\" "
         if is_sd2:
